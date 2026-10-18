@@ -11,6 +11,11 @@
   .card { background: var(--card); border-radius: 12px; padding: 12px 16px; margin: 12px 0; }
   button { width: 100%; padding: 12px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font-size: 16px; }
   button.link { background: none; color: var(--muted); font-size: 14px; }
+  button:disabled { opacity: 0.4; }
+  .dirs { display: flex; gap: 8px; margin: 12px 0; }
+  .dirs button { background: #2a2a2a; }
+  .dirs button.on { background: var(--accent); }
+  .big { font-size: 22px; font-weight: bold; text-align: center; margin: 12px 0; }
   input, select { width: 100%; box-sizing: border-box; padding: 10px; margin: 8px 0; border: 1px solid #333; border-radius: 8px; background: #000; color: var(--fg); font-size: 16px; }
   input:disabled { opacity: 0.4; }
   label { display: block; color: var(--muted); font-size: 14px; }
@@ -58,11 +63,24 @@
   <button id="s-cancel" class="link">Отмена</button>
 </div>
 
+<div id="trade" class="card" hidden>
+  <div id="t-title" class="row"></div>
+  <div id="t-dirs" class="dirs">
+    <button data-dir="LONG">LONG</button><button data-dir="SHORT">SHORT</button><button data-dir="FLAT">FLAT</button>
+  </div>
+  <div id="t-calc"></div>
+  <div id="t-error" class="error"></div>
+  <button id="t-done">Исполнено</button>
+  <button id="t-cancel" class="link">Отмена</button>
+  <button id="t-edit" class="link">Настройки стратегии</button>
+</div>
+
 <script>
 const API = "https://api.finam.ru/v1";
 const TOKEN_KEY = "finamSecret";
 const STRATEGIES_KEY = "strategies";
 const SIGN = { LONG: 1, SHORT: -1, FLAT: 0 };
+const MONTHS = "FGHJKMNQUVXZ";  // коды месяцев в тикерах фьючерсов Мосбиржи: NGV6 — октябрь 2026
 const $ = id => document.getElementById(id);
 
 const tg = window.Telegram?.WebApp;
@@ -71,6 +89,8 @@ const inTelegram = Boolean(tg?.initData) && tg.isVersionAtLeast("6.9");
 let strategies = [];
 let strategiesLoaded = false;  // пока не загрузились — не сохраняем, иначе затрём облако
 let editing = null;            // индекс редактируемой стратегии, -1 — новая, null — форма закрыта
+let trade = null;              // карточка стратегии: {i, direction, target}, direction и target — после выбора направления
+let account = null;            // данные последнего «Обновить»
 
 // Портфель хранится в облаке Telegram; в обычном браузере (отладка) — в localStorage
 function storageGet(key) {
@@ -98,26 +118,58 @@ const num = v => Number(v.value);                       // {"value": "1.5"} -> 1
 const money = m => Number(m.units) + m.nanos / 1e9;     // {"units": "909", "nanos": 530000000} -> 909.53
 const fmt = (x, digits = 0) => x.toLocaleString("ru-RU", { maximumFractionDigits: digits });
 const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const signed = q => (q > 0 ? "+" : "") + q;
+const assetOf = name => name.match(/^[A-Za-z]+/)[0];   // NG3 → NG
 
-async function loadAccount(secret) {
+// Фьючерс с ГО; null — не фьючерс
+async function loadContract(symbol, accountId, jwt) {
+  const q = encodeURIComponent(symbol);
+  const [asset, params] = await Promise.all([
+    api("GET", `/assets/${q}?account_id=${accountId}`, { jwt }),
+    api("GET", `/assets/${q}/params?account_id=${accountId}`, { jwt }),
+  ]);
+  if (asset.type !== "FUTURES") return null;
+  return {
+    ticker: asset.ticker,
+    expiration: asset.expiration_date,                 // {year, month, day}
+    goLong: money(params.long_initial_margin),
+    goShort: money(params.short_initial_margin),
+  };
+}
+
+// Позиции по активу на счёте нет — берём ближайший неистёкший контракт, перебирая месяцы вперёд
+async function nearestContract(base, accountId, jwt) {
+  const now = new Date();
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const symbol = `${base}${MONTHS[d.getMonth()]}${d.getFullYear() % 10}@RTSX`;
+    const c = await loadContract(symbol, accountId, jwt).catch(() => null);  // такого контракта нет
+    const e = c?.expiration;
+    if (e && new Date(e.year, e.month - 1, e.day + 1) > now) return c;
+  }
+  return null;
+}
+
+async function loadAccount(secret, assets) {
   const { token: jwt } = await api("POST", "/sessions", { body: { secret } });
   const { account_ids } = await api("POST", "/sessions/details", { body: { token: jwt } });
   const acc = await api("GET", `/accounts/${account_ids[0]}`, { jwt });
 
   const futures = [];
+  const contracts = {};  // актив → контракт, от которого берём ГО для расчёта
   for (const p of acc.positions) {
     if (!p.symbol.endsWith("@RTSX")) continue;  // не срочный рынок Мосбиржи
-    const q = encodeURIComponent(p.symbol);
-    const [asset, params] = await Promise.all([
-      api("GET", `/assets/${q}?account_id=${acc.account_id}`, { jwt }),
-      api("GET", `/assets/${q}/params?account_id=${acc.account_id}`, { jwt }),
-    ]);
-    if (asset.type !== "FUTURES") continue;
+    const c = await loadContract(p.symbol, acc.account_id, jwt);
+    if (!c) continue;
+    const base = c.ticker.slice(0, -2);  // NGV6 → NG: контракт не показываем, переход делается руками
     const qty = num(p.quantity);
-    const go = money(qty < 0 ? params.short_initial_margin : params.long_initial_margin);
-    futures.push({ base: asset.ticker.slice(0, -2), qty, go });  // NGV6 → NG: контракт не показываем, переход делается руками
+    contracts[base] = c;
+    futures.push({ base, qty, go: qty < 0 ? c.goShort : c.goLong });
   }
-  return { acc, futures };
+  for (const base of assets) {
+    if (!contracts[base]) contracts[base] = await nearestContract(base, acc.account_id, jwt);
+  }
+  return { acc, futures, contracts };
 }
 
 function render({ acc, futures }) {
@@ -151,11 +203,62 @@ function renderStrategies() {
     </div>`).join("") || `<div class="muted">Пока нет ни одной</div>`;
 }
 
+// Временная формула: доля капитала / ГО контракта, не больше «макс». Логику управления решаем потом — меняем только здесь
+function targetQuantity(s, direction, equity, go) {
+  if (direction === "FLAT") return 0;
+  const qty = Math.floor(equity * s.allocationPct / 100 / go);
+  return SIGN[direction] * (s.maxContracts ? Math.min(qty, s.maxContracts) : qty);
+}
+
+function renderTrade() {
+  const s = strategies[trade.i];
+  const base = assetOf(s.name);
+  $("t-title").innerHTML = `<b>${esc(s.name)}</b><span>${s.direction} ${signed(s.quantity)}</span>`;
+  for (const b of $("t-dirs").children) {
+    b.disabled = b.dataset.dir === s.direction;
+    b.classList.toggle("on", b.dataset.dir === trade.direction);
+  }
+  $("t-error").textContent = "";
+  trade.target = null;
+
+  const c = account?.contracts[base];
+  if (!trade.direction) {
+    $("t-calc").innerHTML = "";
+  } else if (!account || (!c && trade.direction !== "FLAT")) {
+    $("t-calc").innerHTML = `<div class="muted">${account ? `Не нашёл контракт ${esc(base)}, ГО неизвестно.` : ""} Нажми «Обновить»</div>`;
+  } else {
+    const equity = num(account.acc.equity);
+    const go = c && (trade.direction === "SHORT" ? c.goShort : c.goLong);
+    trade.target = targetQuantity(s, trade.direction, equity, go);
+    const delta = trade.target - s.quantity;
+    const onAccount = account.futures.filter(f => f.base === base).reduce((sum, f) => sum + f.qty, 0);
+    $("t-calc").innerHTML = `
+      ${trade.direction === "FLAT" ? "" : `
+        <div class="row"><span>Капитал</span><span>${fmt(equity)} ₽</span></div>
+        <div class="row"><span>Бюджет ${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</span><span>${fmt(equity * s.allocationPct / 100)} ₽</span></div>
+        <div class="row"><span>ГО ${c.ticker}</span><span>${fmt(go, 2)} ₽</span></div>`}
+      <div class="row"><span>Цель</span><b>${signed(trade.target)}</b></div>
+      <div class="row"><span>Сейчас</span><span>${signed(s.quantity)}</span></div>
+      <div class="big ${delta < 0 ? "neg" : delta > 0 ? "pos" : ""}">
+        ${delta > 0 ? `КУПИТЬ ${delta} ${esc(base)}` : delta < 0 ? `ПРОДАТЬ ${-delta} ${esc(base)}` : "Ничего делать не нужно"}
+      </div>
+      <div class="row"><span>На счёте ${esc(base)}</span><span>${signed(onAccount)} → ${signed(onAccount + delta)}</span></div>`;
+  }
+  $("t-done").hidden = trade.target === null;
+}
+
+function openTrade(i) {
+  trade = { i, direction: null, target: null };
+  renderTrade();
+  showScreen();
+}
+
 async function refresh() {
   $("status").className = "muted";
   $("status").textContent = "Загрузка…";
   try {
-    render(await loadAccount(localStorage.getItem(TOKEN_KEY)));
+    account = await loadAccount(localStorage.getItem(TOKEN_KEY), new Set(strategies.map(s => assetOf(s.name))));
+    render(account);
     $("status").textContent = `Обновлено ${new Date().toLocaleTimeString("ru-RU")}`;
   } catch (e) {
     $("status").className = "error";
@@ -166,8 +269,9 @@ async function refresh() {
 function showScreen() {
   const hasToken = Boolean(localStorage.getItem(TOKEN_KEY));
   $("token-form").hidden = hasToken;
-  $("main").hidden = !hasToken || editing !== null;
+  $("main").hidden = !hasToken || editing !== null || trade !== null;
   $("strategy-form").hidden = !hasToken || editing === null;
+  $("trade").hidden = !hasToken || trade === null;
 }
 
 function openForm(i) {
@@ -187,6 +291,7 @@ function openForm(i) {
 
 function closeForm() {
   editing = null;
+  trade = null;
   showScreen();
 }
 
@@ -227,6 +332,7 @@ $("token-save").onclick = () => {
 };
 $("token-reset").onclick = () => {
   localStorage.removeItem(TOKEN_KEY);
+  account = null;
   $("account").innerHTML = "";
   $("status").textContent = "";
   showScreen();
@@ -236,7 +342,7 @@ $("refresh").onclick = refresh;
 $("strategy-add").onclick = () => openForm(-1);
 $("strategies").onclick = e => {
   const row = e.target.closest(".strategy");
-  if (row) openForm(Number(row.dataset.i));
+  if (row) openTrade(Number(row.dataset.i));
 };
 $("s-dir").onchange = () => {
   $("s-qty").disabled = $("s-dir").value === "FLAT";
@@ -262,6 +368,26 @@ $("s-delete").onclick = async () => {
   }
 };
 $("s-cancel").onclick = closeForm;
+
+$("t-dirs").onclick = e => {
+  if (!e.target.dataset.dir) return;
+  trade.direction = e.target.dataset.dir;
+  renderTrade();
+};
+$("t-done").onclick = async () => {
+  const { i, direction, target } = trade;
+  try {
+    await saveStrategies(strategies.map((old, j) => j === i ? { ...old, direction, quantity: target } : old));
+  } catch (e) {
+    $("t-error").textContent = e.message;
+  }
+};
+$("t-cancel").onclick = closeForm;
+$("t-edit").onclick = () => {
+  const { i } = trade;
+  trade = null;
+  openForm(i);
+};
 
 tg?.ready();
 tg?.expand();
