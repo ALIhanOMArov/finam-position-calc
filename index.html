@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Калькулятор позиций</title>
+<style>
+  :root { --bg: #111; --fg: #eee; --muted: #888; --card: #1c1c1c; --accent: #3a7afe; --red: #ff6b6b; --green: #4cd964; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.4 system-ui, sans-serif; }
+  .card { background: var(--card); border-radius: 12px; padding: 12px 16px; margin: 12px 0; }
+  button { width: 100%; padding: 12px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font-size: 16px; }
+  button.link { background: none; color: var(--muted); font-size: 14px; }
+  input { width: 100%; box-sizing: border-box; padding: 10px; margin: 8px 0; border: 1px solid #333; border-radius: 8px; background: #000; color: var(--fg); }
+  .row { display: flex; justify-content: space-between; padding: 4px 0; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .error { color: var(--red); }
+  .neg { color: var(--red); }
+  .pos { color: var(--green); }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 6px 0; vertical-align: top; }
+  td:last-child { text-align: right; font-weight: bold; }
+</style>
+</head>
+<body>
+<div id="token-form" class="card" hidden>
+  <div class="muted">Секретный токен Finam Trade API. Хранится только на этом устройстве.</div>
+  <input id="token-input" type="password" autocomplete="off">
+  <button id="token-save">Сохранить</button>
+</div>
+
+<div id="main" hidden>
+  <button id="refresh">Обновить</button>
+  <div id="status" class="muted"></div>
+  <div id="account"></div>
+  <button id="token-reset" class="link">Сменить токен</button>
+</div>
+
+<script>
+const API = "https://api.finam.ru/v1";
+const TOKEN_KEY = "finamSecret";
+const $ = id => document.getElementById(id);
+
+async function api(method, path, { body, jwt } = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (jwt) headers.Authorization = jwt;
+  const resp = await fetch(API + path, { method, headers, body: body && JSON.stringify(body) });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(`${resp.status}: ${data.message || JSON.stringify(data)}`);
+  return data;
+}
+
+const num = v => Number(v.value);                       // {"value": "1.5"} -> 1.5
+const money = m => Number(m.units) + m.nanos / 1e9;     // {"units": "909", "nanos": 530000000} -> 909.53
+const fmt = (x, digits = 0) => x.toLocaleString("ru-RU", { maximumFractionDigits: digits });
+
+async function loadAccount(secret) {
+  const { token: jwt } = await api("POST", "/sessions", { body: { secret } });
+  const { account_ids } = await api("POST", "/sessions/details", { body: { token: jwt } });
+  const acc = await api("GET", `/accounts/${account_ids[0]}`, { jwt });
+
+  const futures = [];
+  for (const p of acc.positions) {
+    if (!p.symbol.endsWith("@RTSX")) continue;  // не срочный рынок Мосбиржи
+    const q = encodeURIComponent(p.symbol);
+    const [asset, params] = await Promise.all([
+      api("GET", `/assets/${q}?account_id=${acc.account_id}`, { jwt }),
+      api("GET", `/assets/${q}/params?account_id=${acc.account_id}`, { jwt }),
+    ]);
+    if (asset.type !== "FUTURES") continue;
+    const qty = num(p.quantity);
+    const go = money(qty < 0 ? params.short_initial_margin : params.long_initial_margin);
+    futures.push({ symbol: p.symbol, name: asset.name, qty, go });
+  }
+  return { acc, futures };
+}
+
+function render({ acc, futures }) {
+  const free = acc.portfolio_mc?.available_cash;
+  const rows = futures.map(f => `
+    <tr>
+      <td>${f.name}<div class="muted">${f.symbol} · ГО ${fmt(f.go, 2)} ₽</div></td>
+      <td class="${f.qty < 0 ? "neg" : "pos"}">${f.qty > 0 ? "+" : ""}${f.qty}</td>
+    </tr>`).join("");
+  $("account").innerHTML = `
+    <div class="card">
+      <div class="row"><span>Счёт</span><span>${acc.account_id}</span></div>
+      <div class="row"><span>Капитал</span><b>${fmt(num(acc.equity))} ₽</b></div>
+      ${free ? `<div class="row"><span>Свободно</span><span>${fmt(num(free))} ₽</span></div>` : ""}
+      <div class="row"><span>Нереализ. P&amp;L</span><span>${fmt(num(acc.unrealized_profit))} ₽</span></div>
+    </div>
+    <div class="card">
+      <div class="muted">Фьючерсы на счёте</div>
+      <table>${rows || "<tr><td>нет</td></tr>"}</table>
+    </div>`;
+}
+
+async function refresh() {
+  $("status").className = "muted";
+  $("status").textContent = "Загрузка…";
+  try {
+    render(await loadAccount(localStorage.getItem(TOKEN_KEY)));
+    $("status").textContent = `Обновлено ${new Date().toLocaleTimeString("ru-RU")}`;
+  } catch (e) {
+    $("status").className = "error";
+    $("status").textContent = `Ошибка: ${e.message}`;
+  }
+}
+
+function showScreen() {
+  const hasToken = Boolean(localStorage.getItem(TOKEN_KEY));
+  $("token-form").hidden = hasToken;
+  $("main").hidden = !hasToken;
+}
+
+$("token-save").onclick = () => {
+  const secret = $("token-input").value.trim();
+  if (!secret) return;
+  localStorage.setItem(TOKEN_KEY, secret);
+  $("token-input").value = "";
+  showScreen();
+  refresh();
+};
+$("token-reset").onclick = () => {
+  localStorage.removeItem(TOKEN_KEY);
+  $("account").innerHTML = "";
+  $("status").textContent = "";
+  showScreen();
+};
+$("refresh").onclick = refresh;
+
+showScreen();
+</script>
+</body>
+</html>
