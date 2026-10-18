@@ -144,8 +144,15 @@
 
 <div id="settings" hidden>
   <h1>Настройки</h1>
+  <div class="section-title">Деньги</div>
+  <div class="card">
+    <div class="item"><span class="grow">Всё на счёте</span><span id="equity">—</span></div>
+    <div class="item"><div class="grow">Под торговлю<div id="trading-split" class="sub"></div></div><b id="trading">—</b></div>
+  </div>
+  <div class="foot">Облигации и фонды — резерв, в расчёт не идут.</div>
   <div class="section-title">Стратегии</div>
   <div id="settings-strategies" class="card"></div>
+  <div id="strategies-total" class="foot"></div>
   <button id="strategy-add" class="btn secondary">+ Добавить стратегию</button>
   <div class="section-title">Финам</div>
   <div class="card"><div class="item"><span class="grow">Счёт</span><span id="account-id" class="sub">—</span></div></div>
@@ -157,7 +164,7 @@
   <div class="title-row"><h1 id="s-title"></h1></div>
   <div class="card">
     <label class="field">Имя<input id="s-name" placeholder="NG3" autocomplete="off"><small>Код актива и номер стратегии, как в алерте</small></label>
-    <label class="field">Доля капитала, %<input id="s-pct" type="number" min="0" max="100" step="any" inputmode="decimal"></label>
+    <label class="field">Доля, %<input id="s-pct" type="number" min="0" max="100" step="any" inputmode="decimal"><small>От суммы под торговлю</small></label>
     <label class="field">Макс. контрактов<input id="s-max" type="number" min="1" step="1" inputmode="numeric" placeholder="не ограничено"></label>
     <label class="field">Направление
       <select id="s-dir"><option>LONG</option><option>SHORT</option><option>FLAT</option></select>
@@ -285,16 +292,21 @@ async function loadAccount(secret, assets) {
   for (const base of assets) {
     if (!contracts[base]) contracts[base] = await nearestContract(base, acc.account_id, jwt);
   }
-  return { acc, futures, contracts };
+  // Под торговлю — свободные деньги + ГО открытых фьючерсов. Облигации и фонды — резерв, в расчёт не идут
+  const free = num(acc.portfolio_mc.available_cash);
+  const inMargin = futures.reduce((sum, f) => sum + Math.abs(f.qty) * f.go, 0);
+  return { acc, futures, contracts, free, inMargin, trading: free + inMargin };
 }
 
-function render({ acc, futures }) {
-  const free = acc.portfolio_mc?.available_cash;
+function render({ acc, futures, free, inMargin, trading }) {
   const pnl = num(acc.unrealized_profit);
   $("capital").textContent = `${fmt(num(acc.equity))} ₽`;
-  $("free").textContent = free ? `${fmt(num(free))} ₽` : "—";
+  $("free").textContent = `${fmt(free)} ₽`;
   $("pnl").textContent = `${pnl > 0 ? "+" : ""}${fmt(pnl)} ₽`;
   $("account-id").textContent = acc.account_id;
+  $("equity").textContent = `${fmt(num(acc.equity))} ₽`;
+  $("trading").textContent = `${fmt(trading)} ₽`;
+  $("trading-split").textContent = `свободно ${fmt(free)} ₽ + ГО ${fmt(inMargin)} ₽`;
   $("positions").innerHTML = futures.map(f => `
     <div class="item">
       <b class="grow">${f.base}</b>
@@ -313,14 +325,16 @@ function renderStrategies() {
   $("settings-strategies").innerHTML = strategies.map((s, i) => `
     <div class="item tap strategy" data-i="${i}">
       <b class="grow">${esc(s.name)}</b>
-      <span class="sub">${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</span>
+      <span class="sub">${s.allocationPct}%${account ? ` · ${fmt(account.trading * s.allocationPct / 100)} ₽` : ""}${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</span>
     </div>`).join("") || `<div class="item sub">Пока нет ни одной</div>`;
+  const total = strategies.reduce((sum, s) => sum + s.allocationPct, 0);
+  $("strategies-total").textContent = strategies.length ? `Стратегий: ${strategies.length} · всего ${fmt(total, 2)}% от суммы под торговлю` : "";
 }
 
-// Временная формула: доля капитала / ГО контракта, не больше «макс». Логику управления решаем потом — меняем только здесь
-function targetQuantity(s, direction, equity, go) {
+// Временная формула: доля от суммы под торговлю / ГО контракта, не больше «макс». Логику управления решаем потом — меняем только здесь
+function targetQuantity(s, direction, capital, go) {
   if (direction === "FLAT") return 0;
-  const qty = Math.floor(equity * s.allocationPct / 100 / go);
+  const qty = Math.floor(capital * s.allocationPct / 100 / go);
   return SIGN[direction] * (s.maxContracts ? Math.min(qty, s.maxContracts) : qty);
 }
 
@@ -341,9 +355,9 @@ function renderTrade() {
   } else if (!account || (!c && trade.direction !== "FLAT")) {
     $("t-calc").innerHTML = `<div class="banner">${account ? `Не нашёл контракт ${esc(base)}, ГО неизвестно.` : "Счёт ещё не загружен."} Обнови счёт на главной</div>`;
   } else {
-    const equity = num(account.acc.equity);
+    const capital = account.trading;
     const go = c && (trade.direction === "SHORT" ? c.goShort : c.goLong);
-    trade.target = targetQuantity(s, trade.direction, equity, go);
+    trade.target = targetQuantity(s, trade.direction, capital, go);
     const delta = trade.target - s.quantity;
     const onAccount = account.futures.filter(f => f.base === base).reduce((sum, f) => sum + f.qty, 0);
     const [kind, action] = delta > 0 ? ["buy", `КУПИТЬ ${delta} ${esc(base)}`]
@@ -352,8 +366,8 @@ function renderTrade() {
       <div class="verdict ${kind}">${action}<small>на счёте ${esc(base)}: ${signed(onAccount)} → ${signed(onAccount + delta)}</small></div>
       <div class="card">
         ${trade.direction === "FLAT" ? "" : `
-          <div class="item"><span class="grow">Капитал</span>${fmt(equity)} ₽</div>
-          <div class="item"><span class="grow">Бюджет ${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</span>${fmt(equity * s.allocationPct / 100)} ₽</div>
+          <div class="item"><span class="grow">Под торговлю</span>${fmt(capital)} ₽</div>
+          <div class="item"><span class="grow">Бюджет ${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</span>${fmt(capital * s.allocationPct / 100)} ₽</div>
           <div class="item"><span class="grow">ГО ${c.ticker}</span>${fmt(go, 2)} ₽</div>`}
         <div class="item"><span class="grow">Цель</span><b>${signed(trade.target)}</b></div>
         <div class="item"><span class="grow">Сейчас</span>${signed(s.quantity)}</div>
@@ -375,6 +389,7 @@ async function refresh() {
   try {
     account = await loadAccount(localStorage.getItem(TOKEN_KEY), new Set(strategies.map(s => assetOf(s.name))));
     render(account);
+    if (strategiesLoaded) renderStrategies();  // суммы стратегий в настройках; не загрузились — не затираем ошибку
     if (trade) renderTrade();
     $("status").textContent = `Обновлено ${new Date().toLocaleTimeString("ru-RU")}`;
   } catch (e) {
@@ -460,8 +475,10 @@ $("token-save").onclick = () => {
 $("token-reset").onclick = () => {
   localStorage.removeItem(TOKEN_KEY);
   account = null;
-  for (const id of ["capital", "free", "pnl", "account-id"]) $(id).textContent = "—";
+  for (const id of ["capital", "free", "pnl", "account-id", "equity", "trading"]) $(id).textContent = "—";
+  $("trading-split").textContent = "";
   $("positions").innerHTML = "";
+  if (strategiesLoaded) renderStrategies();
   $("status").textContent = "";
   tab = "main";
   showScreen();
