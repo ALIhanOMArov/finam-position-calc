@@ -2,78 +2,192 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Калькулятор позиций</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-  :root { --bg: #111; --fg: #eee; --muted: #888; --card: #1c1c1c; --accent: #3a7afe; --red: #ff6b6b; --green: #4cd964; }
-  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.4 system-ui, sans-serif; }
-  .card { background: var(--card); border-radius: 12px; padding: 12px 16px; margin: 12px 0; }
-  button { width: 100%; padding: 12px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font-size: 16px; }
-  button.link { background: none; color: var(--muted); font-size: 14px; }
-  button:disabled { opacity: 0.4; }
-  .dirs { display: flex; gap: 8px; margin: 12px 0; }
-  .dirs button { background: #2a2a2a; }
-  .dirs button.on { background: var(--accent); }
-  .big { font-size: 22px; font-weight: bold; text-align: center; margin: 12px 0; }
-  input, select { width: 100%; box-sizing: border-box; padding: 10px; margin: 8px 0; border: 1px solid #333; border-radius: 8px; background: #000; color: var(--fg); font-size: 16px; }
-  input:disabled { opacity: 0.4; }
-  label { display: block; color: var(--muted); font-size: 14px; }
-  .row { display: flex; justify-content: space-between; padding: 4px 0; }
-  .muted { color: var(--muted); font-size: 14px; }
-  .error { color: var(--red); }
-  .neg { color: var(--red); }
-  .pos { color: var(--green); }
-  .strategy { padding: 8px 0; border-top: 1px solid #2a2a2a; cursor: pointer; }
-  table { width: 100%; border-collapse: collapse; }
-  td { padding: 6px 0; vertical-align: top; }
-  td:last-child { text-align: right; font-weight: bold; }
+  /* Фон и текст — из темы Telegram (--tg-theme-*), вне Telegram — запасные. Акценты свои */
+  :root {
+    --fb-bg: #f2f2f7; --fb-card: #fff; --fb-fg: #0b0b0f; --fb-hint: #8a8a93; --fb-line: rgba(60, 60, 67, .14);
+    --accent: #5b4ff6; --accent-text: #5b4ff6; --accent-soft: rgba(91, 79, 246, .12);
+    --long: #16a34a; --long-soft: rgba(22, 163, 74, .13);
+    --short: #e5383b; --short-soft: rgba(229, 56, 59, .12);
+    --seg: rgba(118, 118, 128, .12); --press: rgba(127, 127, 127, .12);
+    --hero: linear-gradient(135deg, #4f46e5 0%, #7c3aed 60%, #c026d3 120%);
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    --fb-bg: #000; --fb-card: #1c1c1e; --fb-fg: #f2f2f7; --fb-hint: #8d8d93; --fb-line: rgba(255, 255, 255, .1);
+    --accent-text: #8f87ff; --accent-soft: rgba(143, 135, 255, .16);
+    --long: #30d158; --long-soft: rgba(48, 209, 88, .16);
+    --short: #ff5c5c; --short-soft: rgba(255, 92, 92, .16);
+    --seg: rgba(118, 118, 128, .24);
+    color-scheme: dark;
+  }
+  :root {
+    --bg: var(--tg-theme-secondary-bg-color, var(--fb-bg));
+    --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, var(--fb-card)));
+    --fg: var(--tg-theme-text-color, var(--fb-fg));
+    --hint: var(--tg-theme-hint-color, var(--fb-hint));
+    --line: var(--tg-theme-section-separator-color, var(--fb-line));
+  }
+  [hidden] { display: none !important; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { background: var(--bg); }
+  body {
+    margin: 0; padding: 16px 16px calc(96px + env(safe-area-inset-bottom));
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.4 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; font-variant-numeric: tabular-nums;
+  }
+  h1 { margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -.02em; }
+  b { font-weight: 650; }
+
+  .section-title { margin: 22px 16px 8px; color: var(--hint); font-size: 13px; text-transform: uppercase; letter-spacing: .05em; }
+  .card { background: var(--card); border-radius: 16px; overflow: hidden; }
+  .item { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 12px 16px; }
+  .item + .item { border-top: 1px solid var(--line); }
+  .tap { cursor: pointer; }
+  .tap:active { background: var(--press); }
+  .tap::after { content: "›"; margin-left: 2px; color: var(--hint); font-size: 24px; line-height: 1; }
+  .grow { flex: 1; min-width: 0; }
+  .sub { color: var(--hint); font-size: 14px; }
+  .foot { margin: 8px 16px 0; color: var(--hint); font-size: 13px; }
+  .qty { min-width: 44px; text-align: right; font-weight: 650; }
+  .pos { color: var(--long); }
+  .neg { color: var(--short); }
+  .error { color: var(--short); }
+  .banner { margin-top: 12px; padding: 12px 16px; border-radius: 14px; background: var(--short-soft); color: var(--short); font-size: 14px; }
+  .hint { margin: 16px; color: var(--hint); text-align: center; }
+
+  .pill { padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 750; letter-spacing: .04em; }
+  .pill.LONG { background: var(--long-soft); color: var(--long); }
+  .pill.SHORT { background: var(--short-soft); color: var(--short); }
+  .pill.FLAT { background: var(--seg); color: var(--hint); }
+
+  .hero { position: relative; padding: 18px 18px 16px; border-radius: 22px; background: var(--hero); color: #fff; box-shadow: 0 10px 28px rgba(91, 79, 246, .32); }
+  .hero .label { font-size: 13px; opacity: .8; }
+  .hero .capital { margin: 2px 0 12px; font-size: 34px; font-weight: 800; letter-spacing: -.02em; }
+  .hero .stats { display: flex; gap: 24px; font-size: 15px; }
+  .hero .stats span { display: block; font-size: 12px; opacity: .75; }
+  .hero .status { margin-top: 14px; font-size: 12px; opacity: .75; }
+  .hero p { margin: 8px 0 0; opacity: .85; }
+  .icon-btn { position: absolute; top: 14px; right: 14px; display: grid; place-items: center; width: 42px; height: 42px; padding: 0; border: 0; border-radius: 50%; background: rgba(255, 255, 255, .2); color: #fff; cursor: pointer; }
+  .icon-btn:active { background: rgba(255, 255, 255, .32); }
+  .icon-btn.spin svg { animation: spin .9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  .btn { display: block; width: 100%; margin-top: 12px; padding: 15px; border: 0; border-radius: 14px; font: inherit; font-weight: 650; cursor: pointer; transition: transform .08s; }
+  .btn:active { transform: scale(.98); }
+  .btn.primary { background: var(--accent); color: #fff; box-shadow: 0 6px 18px rgba(91, 79, 246, .3); }
+  .btn.secondary { background: var(--accent-soft); color: var(--accent-text); }
+  .btn.danger { background: var(--short-soft); color: var(--short); }
+  .back { margin: 0 0 10px -4px; padding: 6px 4px; border: 0; background: none; color: var(--accent-text); font: inherit; font-size: 17px; cursor: pointer; }
+
+  .tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; padding-bottom: env(safe-area-inset-bottom); background: var(--card); border-top: 1px solid var(--line); }
+  .tabs button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 9px 0 10px; border: 0; background: none; color: var(--hint); font: inherit; font-size: 11px; font-weight: 650; cursor: pointer; }
+  .tabs button.on { color: var(--accent-text); }
+  .tabs svg { width: 26px; height: 26px; }
+
+  .title-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .segmented { display: flex; gap: 4px; padding: 4px; border-radius: 14px; background: var(--seg); }
+  .segmented button { flex: 1; padding: 11px 0; border: 0; border-radius: 10px; background: none; color: var(--fg); font: inherit; font-weight: 750; cursor: pointer; }
+  .segmented button:disabled { opacity: .35; cursor: default; }
+  .segmented button.on { color: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, .15); }
+  .segmented button.on[data-dir="LONG"] { background: var(--long); }
+  .segmented button.on[data-dir="SHORT"] { background: var(--short); }
+  .segmented button.on[data-dir="FLAT"] { background: var(--hint); }
+  .verdict { margin: 16px 0 12px; padding: 18px; border-radius: 18px; text-align: center; font-size: 26px; font-weight: 800; letter-spacing: -.01em; }
+  .verdict small { display: block; margin-top: 4px; font-size: 14px; font-weight: 500; opacity: .85; }
+  .verdict.buy { background: var(--long-soft); color: var(--long); }
+  .verdict.sell { background: var(--short-soft); color: var(--short); }
+  .verdict.none { background: var(--seg); color: var(--hint); font-size: 18px; }
+
+  .field { display: block; padding: 10px 16px; color: var(--hint); font-size: 13px; }
+  .field + .field { border-top: 1px solid var(--line); }
+  .field input, .field select { display: block; width: 100%; margin-top: 2px; padding: 4px 0; border: 0; outline: 0; background: transparent; color: var(--fg); font: inherit; font-size: 17px; }
+  .field input:disabled { opacity: .4; }
+  .field small { display: block; margin-top: 2px; font-size: 12px; }
 </style>
 </head>
 <body>
-<div id="token-form" class="card" hidden>
-  <div class="muted">Секретный токен Finam Trade API. Хранится только на этом устройстве.</div>
-  <input id="token-input" type="password" autocomplete="off">
-  <button id="token-save">Сохранить</button>
+<div id="token-form" hidden>
+  <div class="hero">
+    <h1>Калькулятор позиций</h1>
+    <p>Считает, сколько контрактов купить или продать, когда стратегия меняет направление.</p>
+  </div>
+  <div class="section-title">Токен Finam Trade API</div>
+  <div class="card"><label class="field"><input id="token-input" type="password" autocomplete="off" placeholder="Секретный токен"></label></div>
+  <div class="foot">Хранится только на этом устройстве.</div>
+  <button id="token-save" class="btn primary">Сохранить</button>
 </div>
 
 <div id="main" hidden>
-  <button id="refresh">Обновить</button>
-  <div id="status" class="muted"></div>
-  <div id="account"></div>
-  <div class="card">
-    <div class="muted">Стратегии</div>
-    <div id="strategies"></div>
-    <button id="strategy-add" class="link">+ Добавить стратегию</button>
+  <div class="hero">
+    <button id="refresh" class="icon-btn" aria-label="Обновить">
+      <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+    </button>
+    <div class="label">Капитал</div>
+    <div id="capital" class="capital">—</div>
+    <div class="stats">
+      <div><span>Свободно</span><b id="free">—</b></div>
+      <div><span>Нереализ. P&amp;L</span><b id="pnl">—</b></div>
+    </div>
+    <div id="status" class="status"></div>
   </div>
-  <button id="token-reset" class="link">Сменить токен</button>
+  <div id="error" class="banner" hidden></div>
+  <div class="section-title">Стратегии</div>
+  <div id="strategies" class="card"></div>
+  <div class="section-title">На счёте</div>
+  <div id="positions" class="card"></div>
 </div>
 
-<div id="strategy-form" class="card" hidden>
-  <label>Имя: код актива и номер стратегии, как в алерте<input id="s-name" placeholder="NG3" autocomplete="off"></label>
-  <label>Доля капитала, %<input id="s-pct" type="number" min="0" max="100" step="any"></label>
-  <label>Макс. контрактов (необязательно)<input id="s-max" type="number" min="1" step="1"></label>
-  <label>Направление
-    <select id="s-dir"><option>LONG</option><option>SHORT</option><option>FLAT</option></select>
-  </label>
-  <label>Контрактов сейчас<input id="s-qty" type="number" min="0" step="1"></label>
-  <div id="s-error" class="error"></div>
-  <button id="s-save">Сохранить</button>
-  <button id="s-delete" class="link">Удалить стратегию</button>
-  <button id="s-cancel" class="link">Отмена</button>
+<div id="settings" hidden>
+  <h1>Настройки</h1>
+  <div class="section-title">Стратегии</div>
+  <div id="settings-strategies" class="card"></div>
+  <button id="strategy-add" class="btn secondary">+ Добавить стратегию</button>
+  <div class="section-title">Финам</div>
+  <div class="card"><div class="item"><span class="grow">Счёт</span><span id="account-id" class="sub">—</span></div></div>
+  <button id="token-reset" class="btn danger">Сменить токен</button>
 </div>
 
-<div id="trade" class="card" hidden>
-  <div id="t-title" class="row"></div>
-  <div id="t-dirs" class="dirs">
+<div id="strategy-form" hidden>
+  <button id="s-cancel" class="back">‹ Назад</button>
+  <div class="title-row"><h1 id="s-title"></h1></div>
+  <div class="card">
+    <label class="field">Имя<input id="s-name" placeholder="NG3" autocomplete="off"><small>Код актива и номер стратегии, как в алерте</small></label>
+    <label class="field">Доля капитала, %<input id="s-pct" type="number" min="0" max="100" step="any" inputmode="decimal"></label>
+    <label class="field">Макс. контрактов<input id="s-max" type="number" min="1" step="1" inputmode="numeric" placeholder="не ограничено"></label>
+    <label class="field">Направление
+      <select id="s-dir"><option>LONG</option><option>SHORT</option><option>FLAT</option></select>
+    </label>
+    <label class="field">Контрактов сейчас<input id="s-qty" type="number" min="0" step="1" inputmode="numeric"></label>
+  </div>
+  <div id="s-error" class="foot error"></div>
+  <button id="s-save" class="btn primary">Сохранить</button>
+  <button id="s-delete" class="btn danger">Удалить стратегию</button>
+</div>
+
+<div id="trade" hidden>
+  <button id="t-cancel" class="back">‹ Назад</button>
+  <div id="t-title" class="title-row"></div>
+  <div id="t-dirs" class="segmented">
     <button data-dir="LONG">LONG</button><button data-dir="SHORT">SHORT</button><button data-dir="FLAT">FLAT</button>
   </div>
   <div id="t-calc"></div>
-  <div id="t-error" class="error"></div>
-  <button id="t-done">Исполнено</button>
-  <button id="t-cancel" class="link">Отмена</button>
-  <button id="t-edit" class="link">Настройки стратегии</button>
+  <div id="t-error" class="foot error"></div>
+  <button id="t-done" class="btn primary">Исполнено</button>
 </div>
+
+<nav id="tabs" class="tabs" hidden>
+  <button data-tab="main">
+    <svg viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>Торговля
+  </button>
+  <button data-tab="settings">
+    <svg viewBox="0 0 24 24"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg>Настройки
+  </button>
+</nav>
 
 <script>
 const API = "https://api.finam.ru/v1";
@@ -88,6 +202,7 @@ const inTelegram = Boolean(tg?.initData) && tg.isVersionAtLeast("6.9");
 
 let strategies = [];
 let strategiesLoaded = false;  // пока не загрузились — не сохраняем, иначе затрём облако
+let tab = "main";              // открытая вкладка: main — торговля, settings — настройки
 let editing = null;            // индекс редактируемой стратегии, -1 — новая, null — форма закрыта
 let trade = null;              // карточка стратегии: {i, direction, target}, direction и target — после выбора направления
 let account = null;            // данные последнего «Обновить»
@@ -120,6 +235,7 @@ const fmt = (x, digits = 0) => x.toLocaleString("ru-RU", { maximumFractionDigits
 const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const signed = q => (q > 0 ? "+" : "") + q;
 const assetOf = name => name.match(/^[A-Za-z]+/)[0];   // NG3 → NG
+const pill = direction => `<span class="pill ${direction}">${direction}</span>`;
 
 // Фьючерс с ГО; null — не фьючерс
 async function loadContract(symbol, accountId, jwt) {
@@ -174,33 +290,31 @@ async function loadAccount(secret, assets) {
 
 function render({ acc, futures }) {
   const free = acc.portfolio_mc?.available_cash;
-  const rows = futures.map(f => `
-    <tr>
-      <td>${f.base}<div class="muted">ГО ${fmt(f.go, 2)} ₽</div></td>
-      <td class="${f.qty < 0 ? "neg" : "pos"}">${f.qty > 0 ? "+" : ""}${f.qty}</td>
-    </tr>`).join("");
-  $("account").innerHTML = `
-    <div class="card">
-      <div class="row"><span>Счёт</span><span>${acc.account_id}</span></div>
-      <div class="row"><span>Капитал</span><b>${fmt(num(acc.equity))} ₽</b></div>
-      ${free ? `<div class="row"><span>Свободно</span><span>${fmt(num(free))} ₽</span></div>` : ""}
-      <div class="row"><span>Нереализ. P&amp;L</span><span>${fmt(num(acc.unrealized_profit))} ₽</span></div>
-    </div>
-    <div class="card">
-      <div class="muted">Фьючерсы на счёте</div>
-      <table>${rows || "<tr><td>нет</td></tr>"}</table>
-    </div>`;
+  const pnl = num(acc.unrealized_profit);
+  $("capital").textContent = `${fmt(num(acc.equity))} ₽`;
+  $("free").textContent = free ? `${fmt(num(free))} ₽` : "—";
+  $("pnl").textContent = `${pnl > 0 ? "+" : ""}${fmt(pnl)} ₽`;
+  $("account-id").textContent = acc.account_id;
+  $("positions").innerHTML = futures.map(f => `
+    <div class="item">
+      <b class="grow">${f.base}</b>
+      <span class="sub">ГО ${fmt(f.go, 2)} ₽</span>
+      <span class="qty ${f.qty < 0 ? "neg" : "pos"}">${signed(f.qty)}</span>
+    </div>`).join("") || `<div class="item sub">Фьючерсов нет</div>`;
 }
 
 function renderStrategies() {
   $("strategies").innerHTML = strategies.map((s, i) => `
-    <div class="strategy" data-i="${i}">
-      <div class="row">
-        <b>${esc(s.name)}</b>
-        <span class="${s.quantity < 0 ? "neg" : s.quantity > 0 ? "pos" : ""}">${s.direction} ${s.quantity > 0 ? "+" : ""}${s.quantity}</span>
-      </div>
-      <div class="muted">${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</div>
-    </div>`).join("") || `<div class="muted">Пока нет ни одной</div>`;
+    <div class="item tap strategy" data-i="${i}">
+      <b class="grow">${esc(s.name)}</b>
+      ${pill(s.direction)}
+      <span class="qty ${s.quantity < 0 ? "neg" : s.quantity > 0 ? "pos" : ""}">${signed(s.quantity)}</span>
+    </div>`).join("") || `<div class="item sub">Пока нет ни одной. Добавь во вкладке «Настройки»</div>`;
+  $("settings-strategies").innerHTML = strategies.map((s, i) => `
+    <div class="item tap strategy" data-i="${i}">
+      <b class="grow">${esc(s.name)}</b>
+      <span class="sub">${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</span>
+    </div>`).join("") || `<div class="item sub">Пока нет ни одной</div>`;
 }
 
 // Временная формула: доля капитала / ГО контракта, не больше «макс». Логику управления решаем потом — меняем только здесь
@@ -213,7 +327,7 @@ function targetQuantity(s, direction, equity, go) {
 function renderTrade() {
   const s = strategies[trade.i];
   const base = assetOf(s.name);
-  $("t-title").innerHTML = `<b>${esc(s.name)}</b><span>${s.direction} ${signed(s.quantity)}</span>`;
+  $("t-title").innerHTML = `<h1 class="grow">${esc(s.name)}</h1>${pill(s.direction)}<span class="qty">${signed(s.quantity)}</span>`;
   for (const b of $("t-dirs").children) {
     b.disabled = b.dataset.dir === s.direction;
     b.classList.toggle("on", b.dataset.dir === trade.direction);
@@ -223,26 +337,27 @@ function renderTrade() {
 
   const c = account?.contracts[base];
   if (!trade.direction) {
-    $("t-calc").innerHTML = "";
+    $("t-calc").innerHTML = `<div class="hint">Выбери новое направление</div>`;
   } else if (!account || (!c && trade.direction !== "FLAT")) {
-    $("t-calc").innerHTML = `<div class="muted">${account ? `Не нашёл контракт ${esc(base)}, ГО неизвестно.` : ""} Нажми «Обновить»</div>`;
+    $("t-calc").innerHTML = `<div class="banner">${account ? `Не нашёл контракт ${esc(base)}, ГО неизвестно.` : "Счёт ещё не загружен."} Обнови счёт на главной</div>`;
   } else {
     const equity = num(account.acc.equity);
     const go = c && (trade.direction === "SHORT" ? c.goShort : c.goLong);
     trade.target = targetQuantity(s, trade.direction, equity, go);
     const delta = trade.target - s.quantity;
     const onAccount = account.futures.filter(f => f.base === base).reduce((sum, f) => sum + f.qty, 0);
+    const [kind, action] = delta > 0 ? ["buy", `КУПИТЬ ${delta} ${esc(base)}`]
+      : delta < 0 ? ["sell", `ПРОДАТЬ ${-delta} ${esc(base)}`] : ["none", "Ничего делать не нужно"];
     $("t-calc").innerHTML = `
-      ${trade.direction === "FLAT" ? "" : `
-        <div class="row"><span>Капитал</span><span>${fmt(equity)} ₽</span></div>
-        <div class="row"><span>Бюджет ${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</span><span>${fmt(equity * s.allocationPct / 100)} ₽</span></div>
-        <div class="row"><span>ГО ${c.ticker}</span><span>${fmt(go, 2)} ₽</span></div>`}
-      <div class="row"><span>Цель</span><b>${signed(trade.target)}</b></div>
-      <div class="row"><span>Сейчас</span><span>${signed(s.quantity)}</span></div>
-      <div class="big ${delta < 0 ? "neg" : delta > 0 ? "pos" : ""}">
-        ${delta > 0 ? `КУПИТЬ ${delta} ${esc(base)}` : delta < 0 ? `ПРОДАТЬ ${-delta} ${esc(base)}` : "Ничего делать не нужно"}
-      </div>
-      <div class="row"><span>На счёте ${esc(base)}</span><span>${signed(onAccount)} → ${signed(onAccount + delta)}</span></div>`;
+      <div class="verdict ${kind}">${action}<small>на счёте ${esc(base)}: ${signed(onAccount)} → ${signed(onAccount + delta)}</small></div>
+      <div class="card">
+        ${trade.direction === "FLAT" ? "" : `
+          <div class="item"><span class="grow">Капитал</span>${fmt(equity)} ₽</div>
+          <div class="item"><span class="grow">Бюджет ${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</span>${fmt(equity * s.allocationPct / 100)} ₽</div>
+          <div class="item"><span class="grow">ГО ${c.ticker}</span>${fmt(go, 2)} ₽</div>`}
+        <div class="item"><span class="grow">Цель</span><b>${signed(trade.target)}</b></div>
+        <div class="item"><span class="grow">Сейчас</span>${signed(s.quantity)}</div>
+      </div>`;
   }
   $("t-done").hidden = trade.target === null;
 }
@@ -254,29 +369,35 @@ function openTrade(i) {
 }
 
 async function refresh() {
-  $("status").className = "muted";
-  $("status").textContent = "Загрузка…";
+  $("refresh").classList.add("spin");
+  $("status").textContent = "Обновляю…";
+  $("error").hidden = true;
   try {
     account = await loadAccount(localStorage.getItem(TOKEN_KEY), new Set(strategies.map(s => assetOf(s.name))));
     render(account);
+    if (trade) renderTrade();
     $("status").textContent = `Обновлено ${new Date().toLocaleTimeString("ru-RU")}`;
   } catch (e) {
-    $("status").className = "error";
-    $("status").textContent = `Ошибка: ${e.message}`;
+    $("status").textContent = "Не обновилось";
+    $("error").textContent = `Ошибка: ${e.message}`;
+    $("error").hidden = false;
+  } finally {
+    $("refresh").classList.remove("spin");
   }
 }
 
 function showScreen() {
-  const hasToken = Boolean(localStorage.getItem(TOKEN_KEY));
-  $("token-form").hidden = hasToken;
-  $("main").hidden = !hasToken || editing !== null || trade !== null;
-  $("strategy-form").hidden = !hasToken || editing === null;
-  $("trade").hidden = !hasToken || trade === null;
+  const screen = !localStorage.getItem(TOKEN_KEY) ? "token-form"
+    : editing !== null ? "strategy-form" : trade !== null ? "trade" : tab;
+  for (const id of ["token-form", "main", "settings", "strategy-form", "trade"]) $(id).hidden = id !== screen;
+  $("tabs").hidden = screen !== "main" && screen !== "settings";
+  for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.tab === screen);
 }
 
 function openForm(i) {
   editing = i;
   const s = strategies[i] ?? { name: "", allocationPct: "", maxContracts: null, direction: "FLAT", quantity: 0 };
+  $("s-title").textContent = i < 0 ? "Новая стратегия" : s.name;
   $("s-name").value = s.name;
   $("s-pct").value = s.allocationPct;
   $("s-max").value = s.maxContracts ?? "";
@@ -322,6 +443,12 @@ async function saveStrategies(next) {
   closeForm();
 }
 
+// Тема как в Telegram; вне Telegram — как в системе
+function applyTheme() {
+  document.documentElement.dataset.theme = tg?.initData ? tg.colorScheme
+    : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 $("token-save").onclick = () => {
   const secret = $("token-input").value.trim();
   if (!secret) return;
@@ -333,16 +460,28 @@ $("token-save").onclick = () => {
 $("token-reset").onclick = () => {
   localStorage.removeItem(TOKEN_KEY);
   account = null;
-  $("account").innerHTML = "";
+  for (const id of ["capital", "free", "pnl", "account-id"]) $(id).textContent = "—";
+  $("positions").innerHTML = "";
   $("status").textContent = "";
+  tab = "main";
   showScreen();
 };
 $("refresh").onclick = refresh;
+$("tabs").onclick = e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  tab = b.dataset.tab;
+  showScreen();
+};
 
 $("strategy-add").onclick = () => openForm(-1);
 $("strategies").onclick = e => {
   const row = e.target.closest(".strategy");
   if (row) openTrade(Number(row.dataset.i));
+};
+$("settings-strategies").onclick = e => {
+  const row = e.target.closest(".strategy");
+  if (row) openForm(Number(row.dataset.i));
 };
 $("s-dir").onchange = () => {
   $("s-qty").disabled = $("s-dir").value === "FLAT";
@@ -383,14 +522,16 @@ $("t-done").onclick = async () => {
   }
 };
 $("t-cancel").onclick = closeForm;
-$("t-edit").onclick = () => {
-  const { i } = trade;
-  trade = null;
-  openForm(i);
-};
 
 tg?.ready();
 tg?.expand();
+applyTheme();
+if (inTelegram) {
+  tg.onEvent("themeChanged", applyTheme);
+  tg.setHeaderColor("secondary_bg_color");
+  tg.setBackgroundColor("secondary_bg_color");
+  if (tg.isVersionAtLeast("7.7")) tg.disableVerticalSwipes();  // список прокручивается, а не закрывает приложение
+}
 showScreen();
 storageGet(STRATEGIES_KEY)
   .then(value => {
@@ -399,8 +540,11 @@ storageGet(STRATEGIES_KEY)
     renderStrategies();
   })
   .catch(e => {
-    $("status").className = "error";
-    $("status").textContent = `Не удалось загрузить стратегии: ${e.message}`;
+    $("strategies").innerHTML = $("settings-strategies").innerHTML =
+      `<div class="item error">Не удалось загрузить стратегии: ${esc(e.message)}</div>`;
+  })
+  .finally(() => {
+    if (localStorage.getItem(TOKEN_KEY)) refresh();  // счёт загружаем сам при открытии
   });
 </script>
 </body>
