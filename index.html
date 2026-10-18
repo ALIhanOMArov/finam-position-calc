@@ -4,18 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Калькулятор позиций</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root { --bg: #111; --fg: #eee; --muted: #888; --card: #1c1c1c; --accent: #3a7afe; --red: #ff6b6b; --green: #4cd964; }
   body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.4 system-ui, sans-serif; }
   .card { background: var(--card); border-radius: 12px; padding: 12px 16px; margin: 12px 0; }
   button { width: 100%; padding: 12px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font-size: 16px; }
   button.link { background: none; color: var(--muted); font-size: 14px; }
-  input { width: 100%; box-sizing: border-box; padding: 10px; margin: 8px 0; border: 1px solid #333; border-radius: 8px; background: #000; color: var(--fg); }
+  input, select { width: 100%; box-sizing: border-box; padding: 10px; margin: 8px 0; border: 1px solid #333; border-radius: 8px; background: #000; color: var(--fg); font-size: 16px; }
+  input:disabled { opacity: 0.4; }
+  label { display: block; color: var(--muted); font-size: 14px; }
   .row { display: flex; justify-content: space-between; padding: 4px 0; }
   .muted { color: var(--muted); font-size: 14px; }
   .error { color: var(--red); }
   .neg { color: var(--red); }
   .pos { color: var(--green); }
+  .strategy { padding: 8px 0; border-top: 1px solid #2a2a2a; cursor: pointer; }
   table { width: 100%; border-collapse: collapse; }
   td { padding: 6px 0; vertical-align: top; }
   td:last-child { text-align: right; font-weight: bold; }
@@ -32,13 +36,55 @@
   <button id="refresh">Обновить</button>
   <div id="status" class="muted"></div>
   <div id="account"></div>
+  <div class="card">
+    <div class="muted">Стратегии</div>
+    <div id="strategies"></div>
+    <button id="strategy-add" class="link">+ Добавить стратегию</button>
+  </div>
   <button id="token-reset" class="link">Сменить токен</button>
+</div>
+
+<div id="strategy-form" class="card" hidden>
+  <label>Имя (как в алерте)<input id="s-name" placeholder="NG3" autocomplete="off"></label>
+  <label>Инструмент (тикер)<input id="s-ticker" placeholder="NGZ6" autocomplete="off"></label>
+  <label>Доля капитала, %<input id="s-pct" type="number" min="0" max="100" step="any"></label>
+  <label>Макс. контрактов (необязательно)<input id="s-max" type="number" min="1" step="1"></label>
+  <label>Направление
+    <select id="s-dir"><option>LONG</option><option>SHORT</option><option>FLAT</option></select>
+  </label>
+  <label>Контрактов сейчас<input id="s-qty" type="number" min="0" step="1"></label>
+  <div id="s-error" class="error"></div>
+  <button id="s-save">Сохранить</button>
+  <button id="s-delete" class="link">Удалить стратегию</button>
+  <button id="s-cancel" class="link">Отмена</button>
 </div>
 
 <script>
 const API = "https://api.finam.ru/v1";
 const TOKEN_KEY = "finamSecret";
+const STRATEGIES_KEY = "strategies";
+const SIGN = { LONG: 1, SHORT: -1, FLAT: 0 };
 const $ = id => document.getElementById(id);
+
+const tg = window.Telegram?.WebApp;
+const inTelegram = Boolean(tg?.initData) && tg.isVersionAtLeast("6.9");
+
+let strategies = [];
+let strategiesLoaded = false;  // пока не загрузились — не сохраняем, иначе затрём облако
+let editing = null;            // индекс редактируемой стратегии, -1 — новая, null — форма закрыта
+
+// Портфель хранится в облаке Telegram; в обычном браузере (отладка) — в localStorage
+function storageGet(key) {
+  if (!inTelegram) return Promise.resolve(localStorage.getItem(key));
+  return new Promise((resolve, reject) =>
+    tg.CloudStorage.getItem(key, (err, value) => err ? reject(new Error(err)) : resolve(value || null)));
+}
+
+function storageSet(key, value) {
+  if (!inTelegram) return Promise.resolve(localStorage.setItem(key, value));
+  return new Promise((resolve, reject) =>
+    tg.CloudStorage.setItem(key, value, err => err ? reject(new Error(err)) : resolve()));
+}
 
 async function api(method, path, { body, jwt } = {}) {
   const headers = { "Content-Type": "application/json" };
@@ -52,6 +98,7 @@ async function api(method, path, { body, jwt } = {}) {
 const num = v => Number(v.value);                       // {"value": "1.5"} -> 1.5
 const money = m => Number(m.units) + m.nanos / 1e9;     // {"units": "909", "nanos": 530000000} -> 909.53
 const fmt = (x, digits = 0) => x.toLocaleString("ru-RU", { maximumFractionDigits: digits });
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
 async function loadAccount(secret) {
   const { token: jwt } = await api("POST", "/sessions", { body: { secret } });
@@ -94,6 +141,17 @@ function render({ acc, futures }) {
     </div>`;
 }
 
+function renderStrategies() {
+  $("strategies").innerHTML = strategies.map((s, i) => `
+    <div class="strategy" data-i="${i}">
+      <div class="row">
+        <b>${esc(s.name)}</b>
+        <span class="${s.quantity < 0 ? "neg" : s.quantity > 0 ? "pos" : ""}">${s.direction} ${s.quantity > 0 ? "+" : ""}${s.quantity}</span>
+      </div>
+      <div class="muted">${esc(s.ticker)} · ${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</div>
+    </div>`).join("") || `<div class="muted">Пока нет ни одной</div>`;
+}
+
 async function refresh() {
   $("status").className = "muted";
   $("status").textContent = "Загрузка…";
@@ -109,7 +167,57 @@ async function refresh() {
 function showScreen() {
   const hasToken = Boolean(localStorage.getItem(TOKEN_KEY));
   $("token-form").hidden = hasToken;
-  $("main").hidden = !hasToken;
+  $("main").hidden = !hasToken || editing !== null;
+  $("strategy-form").hidden = !hasToken || editing === null;
+}
+
+function openForm(i) {
+  editing = i;
+  const s = strategies[i] ?? { name: "", ticker: "", allocationPct: "", maxContracts: null, direction: "FLAT", quantity: 0 };
+  $("s-name").value = s.name;
+  $("s-ticker").value = s.ticker;
+  $("s-pct").value = s.allocationPct;
+  $("s-max").value = s.maxContracts ?? "";
+  $("s-dir").value = s.direction;
+  $("s-qty").value = Math.abs(s.quantity);
+  $("s-qty").disabled = s.direction === "FLAT";
+  $("s-delete").hidden = i < 0;
+  $("s-delete").textContent = "Удалить стратегию";
+  $("s-error").textContent = "";
+  showScreen();
+}
+
+function closeForm() {
+  editing = null;
+  showScreen();
+}
+
+function readForm() {
+  const name = $("s-name").value.trim();
+  const ticker = $("s-ticker").value.trim();
+  const allocationPct = Number($("s-pct").value);
+  const maxContracts = $("s-max").value === "" ? null : Number($("s-max").value);
+  const direction = $("s-dir").value;
+  const qty = direction === "FLAT" ? 0 : Number($("s-qty").value);
+  if (!name) throw new Error("Укажи имя стратегии");
+  if (strategies.some((s, i) => i !== editing && s.name.toLowerCase() === name.toLowerCase())) {
+    throw new Error(`Стратегия ${name} уже есть`);
+  }
+  if (!ticker) throw new Error("Укажи тикер");
+  if (!(allocationPct > 0 && allocationPct <= 100)) throw new Error("Доля — число больше 0 и не больше 100");
+  if (maxContracts !== null && !(Number.isInteger(maxContracts) && maxContracts > 0)) {
+    throw new Error("Макс. контрактов — целое число больше 0");
+  }
+  if (!(Number.isInteger(qty) && qty >= 0)) throw new Error("Контрактов — целое число, 0 или больше");
+  return { name, ticker, allocationPct, maxContracts, direction, quantity: SIGN[direction] * qty };
+}
+
+async function saveStrategies(next) {
+  if (!strategiesLoaded) throw new Error("Стратегии не загрузились — перезапусти приложение");
+  await storageSet(STRATEGIES_KEY, JSON.stringify(next));
+  strategies = next;
+  renderStrategies();
+  closeForm();
 }
 
 $("token-save").onclick = () => {
@@ -128,7 +236,49 @@ $("token-reset").onclick = () => {
 };
 $("refresh").onclick = refresh;
 
+$("strategy-add").onclick = () => openForm(-1);
+$("strategies").onclick = e => {
+  const row = e.target.closest(".strategy");
+  if (row) openForm(Number(row.dataset.i));
+};
+$("s-dir").onchange = () => {
+  $("s-qty").disabled = $("s-dir").value === "FLAT";
+  if ($("s-qty").disabled) $("s-qty").value = 0;
+};
+$("s-save").onclick = async () => {
+  try {
+    const s = readForm();
+    await saveStrategies(editing < 0 ? [...strategies, s] : strategies.map((old, i) => i === editing ? s : old));
+  } catch (e) {
+    $("s-error").textContent = e.message;
+  }
+};
+$("s-delete").onclick = async () => {
+  if ($("s-delete").textContent !== "Точно удалить?") {
+    $("s-delete").textContent = "Точно удалить?";
+    return;
+  }
+  try {
+    await saveStrategies(strategies.filter((_, i) => i !== editing));
+  } catch (e) {
+    $("s-error").textContent = e.message;
+  }
+};
+$("s-cancel").onclick = closeForm;
+
+tg?.ready();
+tg?.expand();
 showScreen();
+storageGet(STRATEGIES_KEY)
+  .then(value => {
+    strategies = JSON.parse(value || "[]");
+    strategiesLoaded = true;
+    renderStrategies();
+  })
+  .catch(e => {
+    $("status").className = "error";
+    $("status").textContent = `Не удалось загрузить стратегии: ${e.message}`;
+  });
 </script>
 </body>
 </html>
