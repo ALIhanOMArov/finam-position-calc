@@ -45,8 +45,7 @@
 </div>
 
 <div id="strategy-form" class="card" hidden>
-  <label>Имя (как в алерте)<input id="s-name" placeholder="NG3" autocomplete="off"></label>
-  <label>Инструмент (тикер)<input id="s-ticker" placeholder="NGZ6" autocomplete="off"></label>
+  <label>Имя: код актива и номер стратегии, как в алерте<input id="s-name" placeholder="NG3" autocomplete="off"></label>
   <label>Доля капитала, %<input id="s-pct" type="number" min="0" max="100" step="any"></label>
   <label>Макс. контрактов (необязательно)<input id="s-max" type="number" min="1" step="1"></label>
   <label>Направление
@@ -116,7 +115,7 @@ async function loadAccount(secret) {
     if (asset.type !== "FUTURES") continue;
     const qty = num(p.quantity);
     const go = money(qty < 0 ? params.short_initial_margin : params.long_initial_margin);
-    futures.push({ symbol: p.symbol, name: asset.name, qty, go });
+    futures.push({ base: asset.ticker.slice(0, -2), qty, go });  // NGV6 → NG: контракт не показываем, переход делается руками
   }
   return { acc, futures };
 }
@@ -125,7 +124,7 @@ function render({ acc, futures }) {
   const free = acc.portfolio_mc?.available_cash;
   const rows = futures.map(f => `
     <tr>
-      <td>${f.name}<div class="muted">${f.symbol} · ГО ${fmt(f.go, 2)} ₽</div></td>
+      <td>${f.base}<div class="muted">ГО ${fmt(f.go, 2)} ₽</div></td>
       <td class="${f.qty < 0 ? "neg" : "pos"}">${f.qty > 0 ? "+" : ""}${f.qty}</td>
     </tr>`).join("");
   $("account").innerHTML = `
@@ -148,7 +147,7 @@ function renderStrategies() {
         <b>${esc(s.name)}</b>
         <span class="${s.quantity < 0 ? "neg" : s.quantity > 0 ? "pos" : ""}">${s.direction} ${s.quantity > 0 ? "+" : ""}${s.quantity}</span>
       </div>
-      <div class="muted">${esc(s.ticker)} · ${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</div>
+      <div class="muted">${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</div>
     </div>`).join("") || `<div class="muted">Пока нет ни одной</div>`;
 }
 
@@ -173,9 +172,8 @@ function showScreen() {
 
 function openForm(i) {
   editing = i;
-  const s = strategies[i] ?? { name: "", ticker: "", allocationPct: "", maxContracts: null, direction: "FLAT", quantity: 0 };
+  const s = strategies[i] ?? { name: "", allocationPct: "", maxContracts: null, direction: "FLAT", quantity: 0 };
   $("s-name").value = s.name;
-  $("s-ticker").value = s.ticker;
   $("s-pct").value = s.allocationPct;
   $("s-max").value = s.maxContracts ?? "";
   $("s-dir").value = s.direction;
@@ -194,22 +192,21 @@ function closeForm() {
 
 function readForm() {
   const name = $("s-name").value.trim();
-  const ticker = $("s-ticker").value.trim();
   const allocationPct = Number($("s-pct").value);
   const maxContracts = $("s-max").value === "" ? null : Number($("s-max").value);
   const direction = $("s-dir").value;
   const qty = direction === "FLAT" ? 0 : Number($("s-qty").value);
-  if (!name) throw new Error("Укажи имя стратегии");
+  // актив стратегии — буквы в начале имени (NG3 → NG), контракт не храним: он меняется
+  if (!/^[A-Za-z]+\d+$/.test(name)) throw new Error("Имя — код актива и номер стратегии, например NG3");
   if (strategies.some((s, i) => i !== editing && s.name.toLowerCase() === name.toLowerCase())) {
     throw new Error(`Стратегия ${name} уже есть`);
   }
-  if (!ticker) throw new Error("Укажи тикер");
   if (!(allocationPct > 0 && allocationPct <= 100)) throw new Error("Доля — число больше 0 и не больше 100");
   if (maxContracts !== null && !(Number.isInteger(maxContracts) && maxContracts > 0)) {
     throw new Error("Макс. контрактов — целое число больше 0");
   }
   if (!(Number.isInteger(qty) && qty >= 0)) throw new Error("Контрактов — целое число, 0 или больше");
-  return { name, ticker, allocationPct, maxContracts, direction, quantity: SIGN[direction] * qty };
+  return { name, allocationPct, maxContracts, direction, quantity: SIGN[direction] * qty };
 }
 
 async function saveStrategies(next) {
