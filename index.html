@@ -130,8 +130,7 @@
     <div class="label">Капитал</div>
     <div id="capital" class="capital">—</div>
     <div class="stats">
-      <div><span>Свободно</span><b id="free">—</b></div>
-      <div><span>Нереализ. P&amp;L</span><b id="pnl">—</b></div>
+      <div><span>Под торговлю</span><b id="hero-trading">—</b></div>
     </div>
     <div id="status" class="status"></div>
   </div>
@@ -148,6 +147,7 @@
   <div class="card">
     <div class="item"><span class="grow">Всё на счёте</span><span id="equity">—</span></div>
     <div class="item"><div class="grow">Под торговлю<div id="trading-split" class="sub"></div></div><b id="trading">—</b></div>
+    <div class="item"><span class="grow">Нереализ. P&amp;L</span><span id="pnl">—</span></div>
   </div>
   <div class="foot">Облигации и фонды — резерв, в расчёт не идут.</div>
   <div class="section-title">Стратегии</div>
@@ -301,7 +301,7 @@ async function loadAccount(secret, assets) {
 function render({ acc, futures, free, inMargin, trading }) {
   const pnl = num(acc.unrealized_profit);
   $("capital").textContent = `${fmt(num(acc.equity))} ₽`;
-  $("free").textContent = `${fmt(free)} ₽`;
+  $("hero-trading").textContent = `${fmt(trading)} ₽`;
   $("pnl").textContent = `${pnl > 0 ? "+" : ""}${fmt(pnl)} ₽`;
   $("account-id").textContent = acc.account_id;
   $("equity").textContent = `${fmt(num(acc.equity))} ₽`;
@@ -475,7 +475,7 @@ $("token-save").onclick = () => {
 $("token-reset").onclick = () => {
   localStorage.removeItem(TOKEN_KEY);
   account = null;
-  for (const id of ["capital", "free", "pnl", "account-id", "equity", "trading"]) $(id).textContent = "—";
+  for (const id of ["capital", "hero-trading", "pnl", "account-id", "equity", "trading"]) $(id).textContent = "—";
   $("trading-split").textContent = "";
   $("positions").innerHTML = "";
   if (strategiesLoaded) renderStrategies();
