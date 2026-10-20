@@ -60,8 +60,8 @@
   .hint { margin: 16px; color: var(--hint); text-align: center; }
 
   .pill { padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 750; letter-spacing: .04em; }
-  .pill.LONG { background: var(--long-soft); color: var(--long); }
-  .pill.SHORT { background: var(--short-soft); color: var(--short); }
+  .pill.LONG, .pill.buy { background: var(--long-soft); color: var(--long); }
+  .pill.SHORT, .pill.sell { background: var(--short-soft); color: var(--short); }
   .pill.FLAT { background: var(--seg); color: var(--hint); }
 
   .hero { position: relative; padding: 18px 18px 16px; border-radius: 22px; background: var(--hero); color: #fff; box-shadow: 0 10px 28px rgba(91, 79, 246, .32); }
@@ -106,7 +106,6 @@
   .field { display: block; padding: 10px 16px; color: var(--hint); font-size: 13px; }
   .field + .field { border-top: 1px solid var(--line); }
   .field input, .field select { display: block; width: 100%; margin-top: 2px; padding: 4px 0; border: 0; outline: 0; background: transparent; color: var(--fg); font: inherit; font-size: 17px; }
-  .field input:disabled { opacity: .4; }
   .field small { display: block; margin-top: 2px; font-size: 12px; }
 </style>
 </head>
@@ -169,7 +168,6 @@
     <label class="field">Направление
       <select id="s-dir"><option>LONG</option><option>SHORT</option><option>FLAT</option></select>
     </label>
-    <label class="field">Контрактов сейчас<input id="s-qty" type="number" min="0" step="1" inputmode="numeric"></label>
   </div>
   <div id="s-error" class="foot error"></div>
   <button id="s-save" class="btn primary">Сохранить</button>
@@ -211,8 +209,9 @@ let strategies = [];
 let strategiesLoaded = false;  // пока не загрузились — не сохраняем, иначе затрём облако
 let tab = "main";              // открытая вкладка: main — торговля, settings — настройки
 let editing = null;            // индекс редактируемой стратегии, -1 — новая, null — форма закрыта
-let trade = null;              // карточка стратегии: {i, direction, target}, direction и target — после выбора направления
-let account = null;            // данные последнего «Обновить»
+let trade = null;              // карточка стратегии: {i, direction, need}; need — сколько нужно по активу при новом направлении
+let account = null;            // данные последнего «Обновить»; null — грузится или не загрузилось
+let refreshing = false;        // счёт сейчас грузится
 
 // Портфель хранится в облаке Telegram; в обычном браузере (отладка) — в localStorage
 function storageGet(key) {
@@ -298,7 +297,7 @@ async function loadAccount(secret, assets) {
   return { acc, futures, contracts, free, inMargin, trading: free + inMargin };
 }
 
-function render({ acc, futures, free, inMargin, trading }) {
+function render({ acc, free, inMargin, trading }) {
   const pnl = num(acc.unrealized_profit);
   $("capital").textContent = `${fmt(num(acc.equity))} ₽`;
   $("hero-trading").textContent = `${fmt(trading)} ₽`;
@@ -307,21 +306,46 @@ function render({ acc, futures, free, inMargin, trading }) {
   $("equity").textContent = `${fmt(num(acc.equity))} ₽`;
   $("trading").textContent = `${fmt(trading)} ₽`;
   $("trading-split").textContent = `свободно ${fmt(free)} ₽ + ГО ${fmt(inMargin)} ₽`;
-  $("positions").innerHTML = futures.map(f => `
+}
+
+// На счёте по активам: факт и, если у актива есть стратегии, сколько нужно по ним — расхождение видно без карточки
+function renderAssets() {
+  if (!account) {
+    $("positions").innerHTML = "";
+    return;
+  }
+  const held = {};  // актив → контрактов на счёте
+  for (const f of account.futures) held[f.base] = (held[f.base] ?? 0) + f.qty;
+  const owned = strategiesLoaded ? strategies.map(s => assetOf(s.name)) : [];
+  $("positions").innerHTML = [...new Set([...Object.keys(held), ...owned])].map(base => {
+    const qty = held[base] ?? 0;
+    const need = owned.includes(base) ? needOf(assetRows(base)) : undefined;
+    if (!qty && need === 0) return "";  // стратегии во FLAT, на счёте пусто
+    const delta = need == null ? 0 : need - qty;
+    const go = account.futures.find(f => f.base === base)?.go;
+    const sub = [
+      !strategiesLoaded ? "" : need === undefined ? "без стратегий" : need === null ? "ГО неизвестно" : `нужно ${signed(need)}`,
+      go ? `ГО ${fmt(go, 2)} ₽` : "",
+    ].filter(Boolean).join(" · ");
+    return `
     <div class="item">
-      <b class="grow">${f.base}</b>
-      <span class="sub">ГО ${fmt(f.go, 2)} ₽</span>
-      <span class="qty ${f.qty < 0 ? "neg" : "pos"}">${signed(f.qty)}</span>
-    </div>`).join("") || `<div class="item sub">Фьючерсов нет</div>`;
+      <div class="grow"><b>${esc(base)}</b><div class="sub">${sub}</div></div>
+      ${delta ? `<span class="pill ${delta > 0 ? "buy" : "sell"}">${delta > 0 ? "купить" : "продать"} ${Math.abs(delta)}</span>` : ""}
+      <span class="qty ${qty < 0 ? "neg" : qty > 0 ? "pos" : ""}">${signed(qty)}</span>
+    </div>`;
+  }).join("") || `<div class="item sub">Фьючерсов нет</div>`;
 }
 
 function renderStrategies() {
-  $("strategies").innerHTML = strategies.map((s, i) => `
+  $("strategies").innerHTML = strategies.map((s, i) => {
+    const q = strategyQty(s, s.direction);
+    return `
     <div class="item tap strategy" data-i="${i}">
       <b class="grow">${esc(s.name)}</b>
       ${pill(s.direction)}
-      <span class="qty ${s.quantity < 0 ? "neg" : s.quantity > 0 ? "pos" : ""}">${signed(s.quantity)}</span>
-    </div>`).join("") || `<div class="item sub">Пока нет ни одной. Добавь во вкладке «Настройки»</div>`;
+      <span class="qty ${q < 0 ? "neg" : q > 0 ? "pos" : ""}">${q === null ? "" : signed(q)}</span>
+    </div>`;
+  }).join("") || `<div class="item sub">Пока нет ни одной. Добавь во вкладке «Настройки»</div>`;
   $("settings-strategies").innerHTML = strategies.map((s, i) => `
     <div class="item tap strategy" data-i="${i}">
       <b class="grow">${esc(s.name)}</b>
@@ -338,67 +362,108 @@ function targetQuantity(s, direction, capital, go) {
   return SIGN[direction] * (s.maxContracts ? Math.min(qty, s.maxContracts) : qty);
 }
 
+// Сколько контрактов держать стратегии в этом направлении по текущему счёту; null — счёт не загружен или ГО неизвестно
+function strategyQty(s, direction) {
+  if (direction === "FLAT") return 0;
+  const c = account?.contracts[assetOf(s.name)];
+  if (!c) return null;
+  return targetQuantity(s, direction, account.trading, direction === "SHORT" ? c.goShort : c.goLong);
+}
+
+// Стратегии актива с количеством по текущему счёту; у стратегии changed — направление direction (карточка, ещё не исполнено)
+function assetRows(base, changed, direction) {
+  return strategies.filter(x => assetOf(x.name) === base).map(x => {
+    const d = x === changed ? direction : x.direction;
+    return { x, direction: d, qty: strategyQty(x, d) };
+  });
+}
+
+// Сколько нужно держать по активу — сумма по его стратегиям; null — ГО неизвестно
+const needOf = rows => rows.some(r => r.qty === null) ? null : rows.reduce((sum, r) => sum + r.qty, 0);
+
 function renderTrade() {
   const s = strategies[trade.i];
   const base = assetOf(s.name);
-  $("t-title").innerHTML = `<h1 class="grow">${esc(s.name)}</h1>${pill(s.direction)}<span class="qty">${signed(s.quantity)}</span>`;
+  $("t-title").innerHTML = `<h1 class="grow">${esc(s.name)}</h1>${pill(s.direction)}`;
   for (const b of $("t-dirs").children) {
     b.disabled = b.dataset.dir === s.direction;
     b.classList.toggle("on", b.dataset.dir === trade.direction);
   }
   $("t-error").textContent = "";
-  trade.target = null;
+  trade.need = null;
 
+  // Сделка = сколько нужно по всем стратегиям актива (у этой — новое направление) − что на счёте по факту
+  const rows = !trade.direction || !account ? [] : assetRows(base, s, trade.direction);
+  const need = needOf(rows);
   const c = account?.contracts[base];
   if (!trade.direction) {
     $("t-calc").innerHTML = `<div class="hint">Выбери новое направление</div>`;
-  } else if (!account || (!c && trade.direction !== "FLAT")) {
-    $("t-calc").innerHTML = `<div class="banner">${account ? `Не нашёл контракт ${esc(base)}, ГО неизвестно.` : "Счёт ещё не загружен."} Обнови счёт на главной</div>`;
+  } else if (!account) {
+    $("t-calc").innerHTML = refreshing ? `<div class="hint">Обновляю счёт…</div>`
+      : `<div class="banner">Счёт не загрузился. Вернись назад и открой стратегию ещё раз</div>`;
+  } else if (need === null) {
+    $("t-calc").innerHTML = `<div class="banner">Не нашёл контракт ${esc(base)}, ГО неизвестно</div>`;
   } else {
-    const capital = account.trading;
-    const go = c && (trade.direction === "SHORT" ? c.goShort : c.goLong);
-    trade.target = targetQuantity(s, trade.direction, capital, go);
-    const delta = trade.target - s.quantity;
+    trade.need = need;
     const onAccount = account.futures.filter(f => f.base === base).reduce((sum, f) => sum + f.qty, 0);
+    const delta = trade.need - onAccount;
     const [kind, action] = delta > 0 ? ["buy", `КУПИТЬ ${delta} ${esc(base)}`]
       : delta < 0 ? ["sell", `ПРОДАТЬ ${-delta} ${esc(base)}`] : ["none", "Ничего делать не нужно"];
     $("t-calc").innerHTML = `
-      <div class="verdict ${kind}">${action}<small>на счёте ${esc(base)}: ${signed(onAccount)} → ${signed(onAccount + delta)}</small></div>
+      <div class="verdict ${kind}">${action}<small>на счёте ${esc(base)}: ${signed(onAccount)} → ${signed(trade.need)}</small></div>
       <div class="card">
-        ${trade.direction === "FLAT" ? "" : `
-          <div class="item"><span class="grow">Под торговлю</span>${fmt(capital)} ₽</div>
-          <div class="item"><span class="grow">Бюджет ${s.allocationPct}%${s.maxContracts ? ` · макс ${s.maxContracts}` : ""}</span>${fmt(capital * s.allocationPct / 100)} ₽</div>
-          <div class="item"><span class="grow">ГО ${c.ticker}</span>${fmt(go, 2)} ₽</div>`}
-        <div class="item"><span class="grow">Цель</span><b>${signed(trade.target)}</b></div>
-        <div class="item"><span class="grow">Сейчас</span>${signed(s.quantity)}</div>
+        <div class="item"><span class="grow">Под торговлю</span>${fmt(account.trading)} ₽</div>
+        ${c ? `<div class="item"><span class="grow">ГО ${c.ticker}</span>${c.goLong === c.goShort ? `${fmt(c.goLong, 2)} ₽`
+          : `лонг ${fmt(c.goLong, 2)} · шорт ${fmt(c.goShort, 2)} ₽`}</div>` : ""}
+        ${rows.map(r => `
+          <div class="item">
+            <b class="grow">${esc(r.x.name)}</b>
+            <span class="sub">${r.x.allocationPct}%${r.x.maxContracts ? ` · макс ${r.x.maxContracts}` : ""}</span>
+            ${pill(r.direction)}
+            <span class="qty">${signed(r.qty)}</span>
+          </div>`).join("")}
+        <div class="item"><span class="grow">Нужно</span><b>${signed(trade.need)}</b></div>
+        <div class="item"><span class="grow">На счёте</span>${signed(onAccount)}</div>
       </div>`;
   }
-  $("t-done").hidden = trade.target === null;
+  $("t-done").hidden = trade.need === null;
 }
 
 function openTrade(i) {
-  trade = { i, direction: null, target: null };
+  trade = { i, direction: null, need: null };
   renderTrade();
   showScreen();
+  refresh();  // сделка считается от факта на счёте — перечитываем его перед каждым расчётом, иначе после сделки она задвоится
 }
 
 async function refresh() {
+  if (refreshing) return;  // уже грузится — по окончании перерисует всё сам
+  refreshing = true;
+  account = null;
+  renderAll();  // старые числа не показываем: по ним сделка задвоится
   $("refresh").classList.add("spin");
   $("status").textContent = "Обновляю…";
   $("error").hidden = true;
   try {
     account = await loadAccount(localStorage.getItem(TOKEN_KEY), new Set(strategies.map(s => assetOf(s.name))));
     render(account);
-    if (strategiesLoaded) renderStrategies();  // суммы стратегий в настройках; не загрузились — не затираем ошибку
-    if (trade) renderTrade();
     $("status").textContent = `Обновлено ${new Date().toLocaleTimeString("ru-RU")}`;
   } catch (e) {
     $("status").textContent = "Не обновилось";
     $("error").textContent = `Ошибка: ${e.message}`;
     $("error").hidden = false;
   } finally {
+    refreshing = false;
     $("refresh").classList.remove("spin");
+    renderAll();
   }
+}
+
+// Всё, что зависит от счёта
+function renderAll() {
+  if (strategiesLoaded) renderStrategies();  // позиции и суммы стратегий; не загрузились — не затираем ошибку
+  renderAssets();
+  if (trade) renderTrade();
 }
 
 function showScreen() {
@@ -411,14 +476,12 @@ function showScreen() {
 
 function openForm(i) {
   editing = i;
-  const s = strategies[i] ?? { name: "", allocationPct: "", maxContracts: null, direction: "FLAT", quantity: 0 };
+  const s = strategies[i] ?? { name: "", allocationPct: "", maxContracts: null, direction: "FLAT" };
   $("s-title").textContent = i < 0 ? "Новая стратегия" : s.name;
   $("s-name").value = s.name;
   $("s-pct").value = s.allocationPct;
   $("s-max").value = s.maxContracts ?? "";
   $("s-dir").value = s.direction;
-  $("s-qty").value = Math.abs(s.quantity);
-  $("s-qty").disabled = s.direction === "FLAT";
   $("s-delete").hidden = i < 0;
   $("s-delete").textContent = "Удалить стратегию";
   $("s-error").textContent = "";
@@ -436,7 +499,6 @@ function readForm() {
   const allocationPct = Number($("s-pct").value);
   const maxContracts = $("s-max").value === "" ? null : Number($("s-max").value);
   const direction = $("s-dir").value;
-  const qty = direction === "FLAT" ? 0 : Number($("s-qty").value);
   // актив стратегии — буквы в начале имени (NG3 → NG), контракт не храним: он меняется
   if (!/^[A-Za-z]+\d+$/.test(name)) throw new Error("Имя — код актива и номер стратегии, например NG3");
   if (strategies.some((s, i) => i !== editing && s.name.toLowerCase() === name.toLowerCase())) {
@@ -446,8 +508,7 @@ function readForm() {
   if (maxContracts !== null && !(Number.isInteger(maxContracts) && maxContracts > 0)) {
     throw new Error("Макс. контрактов — целое число больше 0");
   }
-  if (!(Number.isInteger(qty) && qty >= 0)) throw new Error("Контрактов — целое число, 0 или больше");
-  return { name, allocationPct, maxContracts, direction, quantity: SIGN[direction] * qty };
+  return { name, allocationPct, maxContracts, direction };
 }
 
 async function saveStrategies(next) {
@@ -455,6 +516,7 @@ async function saveStrategies(next) {
   await storageSet(STRATEGIES_KEY, JSON.stringify(next));
   strategies = next;
   renderStrategies();
+  renderAssets();
   closeForm();
 }
 
@@ -500,10 +562,6 @@ $("settings-strategies").onclick = e => {
   const row = e.target.closest(".strategy");
   if (row) openForm(Number(row.dataset.i));
 };
-$("s-dir").onchange = () => {
-  $("s-qty").disabled = $("s-dir").value === "FLAT";
-  if ($("s-qty").disabled) $("s-qty").value = 0;
-};
 $("s-save").onclick = async () => {
   try {
     const s = readForm();
@@ -531,9 +589,11 @@ $("t-dirs").onclick = e => {
   renderTrade();
 };
 $("t-done").onclick = async () => {
-  const { i, direction, target } = trade;
+  const { i, direction } = trade;
   try {
-    await saveStrategies(strategies.map((old, j) => j === i ? { ...old, direction, quantity: target } : old));
+    // quantity — от старых версий: количество больше не храним, оно считается от счёта
+    await saveStrategies(strategies.map((old, j) => j === i ? { ...old, direction, quantity: undefined } : old));
+    refresh();  // после сделки на главной — что стало на счёте и сколько ещё не хватает
   } catch (e) {
     $("t-error").textContent = e.message;
   }
